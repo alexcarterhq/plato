@@ -19,7 +19,7 @@ class BudgetTests(unittest.TestCase):
         self.ledger.initialize(limit, limit + 20, 20, 0, self.deadline, "test")
 
     def test_preflight(self):
-        for credit, gross, spent, net in ((180, 200, 20, 0), (170, 170, 0, 1), (170, 50, 50, 0)):
+        for credit, gross, spent, net in ((170, 170, 0, 1), (170, 50, 50, 0), (170, None, 0, 0)):
             with self.assertRaises(BudgetError):
                 self.ledger.initialize(credit, gross, spent, net, self.deadline, "test")
         self.init()
@@ -99,3 +99,11 @@ class BudgetTests(unittest.TestCase):
     def test_zero_net_with_credit_below_gross_ceiling(self):
         self.ledger.initialize(160, 1000, 3, 0, self.deadline, "test")
         self.assertEqual(self.ledger.config()["cap"], 160_000_000)
+
+    def test_verified_credit_and_zero_net_need_no_gross_report_or_known_grant_expiry(self):
+        self.ledger.initialize(500, None, None, 0, None, "test")
+        state = self.ledger.config()
+        self.assertEqual(state["cap"], 176_110_000)
+        self.assertIsNone(state["gross_used"])
+        self.assertIsNone(state["provided_credit_expiry"])
+        self.assertGreater(datetime.fromisoformat(state["expires"]), datetime.now(timezone.utc))

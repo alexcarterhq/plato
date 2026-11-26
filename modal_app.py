@@ -208,9 +208,11 @@ def make_parser():
     parser.add_argument("--ledger", default=".plato/ledger.sqlite", help="Shared ledger for this experiment")
     verbs = parser.add_subparsers(dest="command", required=True)
     setup = verbs.add_parser("init", help="Record independently verified billing settings")
-    for name in ("credit", "gross-limit", "gross-used", "net-limit", "workspace"):
+    for name in ("credit", "net-limit", "workspace"):
         setup.add_argument("--" + name, required=True)
-    setup.add_argument("--expires", required=True, help="Earlier of credit expiry and cycle reset, ISO timestamp with offset")
+    for name in ("gross-limit", "gross-used"):
+        setup.add_argument("--" + name, help="Optional current-cycle gross limit and usage, supplied together")
+    setup.add_argument("--expires", help="Optional verified grant expiry, ISO timestamp with offset; run cutoff defaults to the next UTC billing month")
     verbs.add_parser("status")
     settle = verbs.add_parser("reconcile", help="Record verified provider gross cost for a terminal attempt")
     settle.add_argument("--attempt", required=True)
@@ -240,7 +242,7 @@ def main():
     cmd = args.command
     if cmd == "init":
         ledger.initialize(args.credit, args.gross_limit, args.gross_used, args.net_limit,
-                          datetime.fromisoformat(args.expires), args.workspace)
+                          datetime.fromisoformat(args.expires) if args.expires else None, args.workspace)
         return
     if cmd == "status":
         config = ledger.config()

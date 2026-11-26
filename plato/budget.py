@@ -63,19 +63,27 @@ class Ledger:
             db.close()
 
     def initialize(self, credit, gross_limit, gross_used, net_limit, expires, workspace):
-        """expires is the earlier of credit expiration and the billing-cycle reset."""
-        if expires.tzinfo is None or expires <= datetime.now(timezone.utc):
+        """With a verified $0 net limit, unknown grant expiry can stop work without charging the card."""
+        now = datetime.now(timezone.utc)
+        next_cycle = now.replace(year=now.year + (now.month == 12), month=now.month % 12 + 1,
+                                 day=1, hour=0, minute=0, second=0, microsecond=0)
+        if expires is not None and (expires.tzinfo is None or expires <= now):
             raise BudgetError("Enter a future date and time including the UTC offset")
+        cutoff = next_cycle if expires is None else min(next_cycle, expires)
         if micros(net_limit) != 0 or not workspace.strip():
             raise BudgetError("A verified zero net spend limit and workspace name are required")
-        available = min(micros(credit), micros(gross_limit) - micros(gross_used))
+        available = min(micros(credit), micros(MAX_CREDIT_USD))
+        if (gross_limit is None) != (gross_used is None):
+            raise BudgetError("Gross limit and usage must be provided together")
+        if gross_limit is not None:
+            available = min(available, micros(gross_limit) - micros(gross_used))
         if available <= 0:
             raise BudgetError("No remaining credit or gross spending headroom")
-        if available > micros(MAX_CREDIT_USD):
-            raise BudgetError("Verified provider spending headroom exceeds the $176.11 project ceiling")
-        config = {"cap": available, "expires": expires.isoformat(), "workspace": workspace,
-                  "run": uuid.uuid4().hex, "credit": str(credit), "gross_limit": str(gross_limit),
-                  "gross_used": str(gross_used), "net_limit": str(net_limit)}
+        config = {"cap": available, "expires": cutoff.isoformat(), "workspace": workspace,
+                  "provided_credit_expiry": expires.isoformat() if expires else None,
+                  "run": uuid.uuid4().hex, "credit": str(credit),
+                  "gross_limit": str(gross_limit) if gross_limit is not None else None,
+                  "gross_used": str(gross_used) if gross_used is not None else None, "net_limit": str(net_limit)}
         with self.transaction(create=True) as db:
             db.execute("CREATE TABLE IF NOT EXISTS settings (id INTEGER PRIMARY KEY, data TEXT NOT NULL)")
             if db.execute("SELECT 1 FROM settings").fetchone():
