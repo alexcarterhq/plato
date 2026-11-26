@@ -310,7 +310,9 @@ def _report(summary, out):
              "Both senders and the shared SmolLM2 receiver are frozen. Each sender reads private records and names the "
              "queried category. The receiver either gets all records in text or gets its own evidence-derived BF16 "
              "vector at a candidate layer plus the current rulebook. Each secret has a different correct destination "
-             "under the second rulebook.", "",
+             "under the second rulebook. Receiver-only runs used identical weights and the same world IDs on two "
+             "different GPU models. Differences between the two pair-level runs therefore combine a change "
+             "of sender with a change of accelerator.", "",
              "![GPU positive controls by pair and interface](controls.svg)", "",
              "Score the first nonempty answer line after trimming whitespace, removing a terminal period or exclamation "
              "mark, and folding case. Each interval uses 10,000 percentile bootstrap samples of independent worlds "
@@ -407,6 +409,16 @@ def generate(root, out):
     else:
         statement = ("GPU validation measured sender retrieval, full-evidence lookup and the receiver's own "
                      "evidence-derived vector. Qualifying a layer for the transfer study also requires selection on familiar facts.")
+    if "amended-qwen" in groups:
+        measured = groups["amended-qwen"]["metrics"]
+        sender_m = measured[_lane("sender",None,None)]
+        text_m = [measured[_lane("full",b,None)] for b in (0,1)]
+        hits = sum(m["correct"] for m in text_m)
+        n = sum(m["observations"] for m in text_m)
+        valid = sum(m["valid_answer"] for m in text_m)
+        statement += (f" With the {chosen} prompt, Qwen retrieved {sender_m['correct']}/{sender_m['observations']} "
+                      f"secrets. Given the evidence in text, SmolLM2 returned a valid number on {valid:,}/{n:,} "
+                      f"answers and routed {hits:,}/{n:,} correctly.")
     key_results = []
     for donor in GPU:
         for phase in ("original","amended"):
