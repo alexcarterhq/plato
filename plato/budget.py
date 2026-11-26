@@ -14,6 +14,7 @@ import uuid
 
 CAPS = {"pilot": 10, "facts": 30, "primary": 50, "replication": 50, "robustness": 20, "recovery": 10}
 MAX_CREDIT_USD = Decimal("176.11")
+PREPAID_BUFFER_USD = Decimal("6.11")
 GPU_RATES = {"CPU": Decimal("0"), "L4": Decimal("0.000222"), "L40S": Decimal("0.000542")}
 CPU_RATE = Decimal("0.0000131")
 RAM_RATE = Decimal("0.00000222")
@@ -70,20 +71,26 @@ class Ledger:
         if expires is not None and (expires.tzinfo is None or expires <= now):
             raise BudgetError("Enter a future date and time including the UTC offset")
         cutoff = next_cycle if expires is None else min(next_cycle, expires)
-        if micros(net_limit) != 0 or not workspace.strip():
-            raise BudgetError("A verified zero net spend limit and workspace name are required")
-        available = min(micros(credit), micros(MAX_CREDIT_USD))
+        if not workspace.strip():
+            raise BudgetError("A verified workspace name is required")
+        zero_net = net_limit is not None and micros(net_limit) == 0
+        if not zero_net and (gross_limit is None or gross_used is None or expires is None):
+            raise BudgetError("Prepaid-only admission requires verified credit expiry, gross limit and gross usage")
+        buffer = 0 if zero_net else micros(PREPAID_BUFFER_USD)
+        available = min(micros(credit), micros(MAX_CREDIT_USD)) - buffer
         if (gross_limit is None) != (gross_used is None):
             raise BudgetError("Gross limit and usage must be provided together")
         if gross_limit is not None:
-            available = min(available, micros(gross_limit) - micros(gross_used))
+            available = min(available, micros(gross_limit) - micros(gross_used) - buffer)
         if available <= 0:
             raise BudgetError("No remaining credit or gross spending headroom")
         config = {"cap": available, "expires": cutoff.isoformat(), "workspace": workspace,
+                  "funding_mode": "zero_net_limit" if zero_net else "prepaid_credit",
+                  "unallocated_buffer_microusd": buffer,
                   "provided_credit_expiry": expires.isoformat() if expires else None,
                   "run": uuid.uuid4().hex, "credit": str(credit),
                   "gross_limit": str(gross_limit) if gross_limit is not None else None,
-                  "gross_used": str(gross_used) if gross_used is not None else None, "net_limit": str(net_limit)}
+                  "gross_used": str(gross_used) if gross_used is not None else None, "net_limit": str(net_limit) if net_limit is not None else None}
         with self.transaction(create=True) as db:
             db.execute("CREATE TABLE IF NOT EXISTS settings (id INTEGER PRIMARY KEY, data TEXT NOT NULL)")
             if db.execute("SELECT 1 FROM settings").fetchone():

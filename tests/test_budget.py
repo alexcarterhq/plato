@@ -19,7 +19,7 @@ class BudgetTests(unittest.TestCase):
         self.ledger.initialize(limit, limit + 20, 20, 0, self.deadline, "test")
 
     def test_preflight(self):
-        for credit, gross, spent, net in ((170, 170, 0, 1), (170, 50, 50, 0), (170, None, 0, 0)):
+        for credit, gross, spent, net in ((170, None, None, 1), (170, 50, 50, 0), (170, None, 0, 0)):
             with self.assertRaises(BudgetError):
                 self.ledger.initialize(credit, gross, spent, net, self.deadline, "test")
         self.init()
@@ -107,3 +107,15 @@ class BudgetTests(unittest.TestCase):
         self.assertIsNone(state["gross_used"])
         self.assertIsNone(state["provided_credit_expiry"])
         self.assertGreater(datetime.fromisoformat(state["expires"]), datetime.now(timezone.utc))
+
+    def test_prepaid_balance_with_unknown_net_limit(self):
+        self.ledger.initialize("176.11", 250, 0, None, self.deadline, "test")
+        config = self.ledger.config()
+        self.assertEqual(config["cap"], 170_000_000)
+        self.assertIsNone(config["net_limit"])
+        self.assertEqual(config["funding_mode"], "prepaid_credit")
+        self.assertEqual(config["unallocated_buffer_microusd"], 6_110_000)
+
+    def test_positive_net_without_expiry_does_not_admit_prepaid_work(self):
+        with self.assertRaises(BudgetError):
+            self.ledger.initialize("176.11", 250, 0, 30, None, "test")

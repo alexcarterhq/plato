@@ -26,20 +26,24 @@ TIMEOUT = {"prepare": 1800, "bench": 600, "facts": 14400, "calibrate": 7200,
            "validate": 7200, "test": 7200, "robustness": 7200}
 
 
-def claim(token):
+def claim(token, cutoff, timeout):
+    from datetime import timezone
+    remaining = (datetime.fromisoformat(cutoff) - datetime.now(timezone.utc)).total_seconds()
+    if remaining <= timeout + SHUTDOWN_SECONDS:
+        raise BudgetError("Queued work would outlive its verified funding period")
     import modal
     claims = modal.Dict.from_name("plato-transfer-attempts", create_if_missing=True)
     if not claims.put(token, True, skip_if_exists=True):
         raise RuntimeError("Interrupted input. Replay requires a new budget reservation.")
 
 
-def remote_prepare(token, run, sender, data_bytes):
+def remote_prepare(token, cutoff, run, sender, data_bytes):
     import modal
     from urllib.request import urlopen
     from huggingface_hub import list_repo_files, snapshot_download
     from plato.config import MODELS
 
-    claim(token)
+    claim(token, cutoff, TIMEOUT["prepare"])
     volume = modal.Volume.from_name(VOLUME)
     volume.reload()
     root = MOUNT / "runs" / run / sender
@@ -70,12 +74,12 @@ def remote_prepare(token, run, sender, data_bytes):
     return {"data_sha256": hashlib.sha256(data_file.read_bytes()).hexdigest(), "sender": sender}
 
 
-def remote_stage(token, run, sender, stage, hardware, shard, shards, quick):
+def remote_stage(token, cutoff, timeout, run, sender, stage, hardware, shard, shards, quick):
     import modal
     import torch
     from plato.pipeline import run_stage
 
-    claim(token)
+    claim(token, cutoff, timeout)
     volume = modal.Volume.from_name(VOLUME)
     volume.reload()
     root = MOUNT / "runs" / run / sender
@@ -120,9 +124,10 @@ def make_backend(timeout=TIMEOUT["test"]):
     image = (modal.Image.debian_slim(python_version="3.11")
              .pip_install("torch==2.6.0", "transformers==4.51.3", "numpy==1.26.4", "safetensors==0.5.3")
              .env({"HF_HOME": str(MOUNT / "hf")})
+             .add_local_file(Path(__file__).resolve(), "/root/modal_app.py")
              .add_local_dir(Path(__file__).resolve().parent / "plato", "/root/plato",
                             ignore=["**/._*", "**/__pycache__/**", "._*"]))
-    options = dict(image=image, volumes={str(MOUNT): volume},
+    options = dict(image=image, include_source=False, volumes={str(MOUNT): volume},
                    cpu=(CORES, CORES), memory=(RAM_GIB * 1024, RAM_GIB * 1024),
                    retries=0, startup_timeout=STARTUP_SECONDS, max_containers=1)
     # Older installed clients call the same one-input lifecycle `max_inputs`.
@@ -208,10 +213,11 @@ def make_parser():
     parser.add_argument("--ledger", default=".plato/ledger.sqlite", help="Shared ledger for this experiment")
     verbs = parser.add_subparsers(dest="command", required=True)
     setup = verbs.add_parser("init", help="Record independently verified billing settings")
-    for name in ("credit", "net-limit", "workspace"):
+    for name in ("credit", "workspace"):
         setup.add_argument("--" + name, required=True)
+    setup.add_argument("--net-limit", help="Verified net spend limit; omit when it is unknown")
     for name in ("gross-limit", "gross-used"):
-        setup.add_argument("--" + name, help="Optional current-cycle gross limit and usage, supplied together")
+        setup.add_argument("--" + name, help="Current-cycle gross limit and usage, required for prepaid-only admission")
     setup.add_argument("--expires", help="Optional verified grant expiry, ISO timestamp with offset; run cutoff defaults to the next UTC billing month")
     verbs.add_parser("status")
     settle = verbs.add_parser("reconcile", help="Record verified provider gross cost for a terminal attempt")
@@ -311,9 +317,9 @@ def main():
                 backend = prepare, worker
             prepare, worker = backend
             if stage == "prepare":
-                return prepare.remote(token, run, sender, data)
+                return prepare.remote(token, config["expires"], run, sender, data)
             return worker[gpu].remote(
-                token, run, sender, stage, gpu, shard, shards, quick)
+                token, config["expires"], timeout, run, sender, stage, gpu, shard, shards, quick)
 
         for gpu, shard, key, pool in units:
             result = attempt(ledger, key, pool, gpu, timeout, submit)
