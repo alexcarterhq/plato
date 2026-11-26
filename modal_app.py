@@ -11,18 +11,21 @@ import time
 
 from plato.subjects import COUNTERFACT_SHA256
 
-from plato.budget import (BudgetError, CAPS, CORES, Ledger, MICRO, RAM_GIB,
-                          SHUTDOWN_SECONDS, STARTUP_SECONDS, envelope, rate)
+from plato.budget import (BudgetError, CAPS, Ledger, MICRO,
+                          SHUTDOWN_SECONDS, STARTUP_SECONDS, envelope, rate, resources)
 
 
 VOLUME = "plato-transfer-experiments"
 MOUNT = Path("/plato-volume")
 DATA_URL = "https://rome.baulab.info/data/dsets/counterfact.json"
 GPUS = ("L4", "L40S")
-POOL = {"bench": "pilot", "facts": "facts", "calibrate": "primary",
+CPU_SCIENCE = "CPU-science"
+POOL = {"bench": "pilot", "prescreen": "facts", "facts": "facts", "calibrate": "primary",
         "validate": "primary", "test": "primary", "robustness": "robustness"}
 TIMEOUT = {"prepare": 1800, "bench": 600, "facts": 14400, "calibrate": 7200,
            "validate": 7200, "test": 7200, "robustness": 7200}
+CPU_TIMEOUT = {**TIMEOUT, "bench": 1800, "prescreen": 14400, "facts": 43200,
+               "calibrate": 14400, "validate": 14400, "robustness": 14400}
 
 
 def claim(token, cutoff, timeout):
@@ -73,8 +76,11 @@ def remote_prepare(token, cutoff, run, sender, data_bytes):
     return {"data_sha256": hashlib.sha256(data_file.read_bytes()).hexdigest(), "sender": sender}
 
 
-def remote_stage(token, cutoff, timeout, run, sender, stage, hardware, shard, shards, quick):
+def remote_stage(token, cutoff, timeout, run, sender, stage, hardware, shard, shards, quick,
+                 prescreen_spec=None, provider=None):
     import modal
+    import resource
+    from importlib.metadata import version
     import torch
     from plato.pipeline import run_stage
 
@@ -82,19 +88,47 @@ def remote_stage(token, cutoff, timeout, run, sender, stage, hardware, shard, sh
     volume = modal.Volume.from_name(VOLUME)
     volume.reload()
     root = MOUNT / "runs" / run / sender
-    out = root / ("quick" if quick else "full")
+    cpu_only = hardware == CPU_SCIENCE
+    cores, ram_gib = resources(hardware)
+    out = (root / "cpu" if cpu_only else root) / ("quick" if quick else "full")
     if stage == "bench":
         out = out / "bench" / hardware
     out.mkdir(parents=True, exist_ok=True)
+    if cpu_only:
+        if torch.cuda.is_available():
+            raise RuntimeError("CPU execution requires a CPU-only container")
+        torch.set_num_threads(cores)
+        torch.set_num_interop_threads(1)
     started = time.monotonic()
-    report = run_stage(stage, sender, out, data_path=root / "counterfact.json",
-                       shard=shard, shards=shards, quick=quick)
-    torch.cuda.synchronize()
+    cpu_start = time.process_time()
+    data = root / "counterfact.json"
+    if stage == "prescreen":
+        from plato.prescreen import run as screen
+        report = screen(sender, data, out, shard=shard, shards=shards,
+                        batch_limit=prescreen_spec["batch_limit"], on_commit=volume.commit)
+    else:
+        if stage == "facts" and prescreen_spec:
+            from plato.prescreen import merge
+            merge(sender, data, out, prescreen_spec["shards"], batch_limit=prescreen_spec["batch_limit"])
+        report = run_stage(stage, sender, out, data_path=data, shard=shard, shards=shards, quick=quick)
+    if not cpu_only:
+        torch.cuda.synchronize()
+    cpu_name = next((line.split(":", 1)[1].strip() for line in Path("/proc/cpuinfo").read_text().splitlines()
+                     if line.startswith("model name") or line.startswith("Hardware")), "unknown")
     report = dict(report)
     report.update(worker_wall_seconds=time.monotonic() - started,
-                  requested_gpu=hardware, actual_gpu=torch.cuda.get_device_name(),
-                  peak_gpu_bytes=torch.cuda.max_memory_allocated(),
+                  worker_cpu_seconds=time.process_time() - cpu_start,
+                  peak_process_rss_bytes=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024,
+                  hardware=hardware, cpu_model=cpu_name, cpu_cores_reserved=cores, memory_gib_reserved=ram_gib,
+                  dtype="float32" if cpu_only else ("bfloat16" if torch.cuda.is_bf16_supported() else "float32"),
+                  provider=provider or {}, function_call_id=modal.current_function_call_id(),
+                  dependencies={name: version(name) for name in ("torch","numpy","transformers","safetensors")},
+                  requested_gpu=None if cpu_only else hardware,
+                  actual_gpu=None if cpu_only else torch.cuda.get_device_name(),
+                  peak_gpu_bytes=0 if cpu_only else torch.cuda.max_memory_allocated(),
                   shard=shard, shards=shards)
+    if cpu_only:
+        report["gpu_s"] = 0.0
     if stage == "bench":
         worlds, seconds = report["worlds"], report["warm_seconds"]
         if worlds <= 0 or seconds <= 0:
@@ -115,19 +149,25 @@ def stage_l40s(*args):
     return remote_stage(*args)
 
 
+def stage_cpu(*args):
+    return remote_stage(*args)
+
+
 def make_backend(hardware, timeout):
     import modal
 
-    app = modal.App("plato-transfer", tags={"project": "plato-transfer"})
     volume = modal.Volume.from_name(VOLUME, create_if_missing=True)
     image = (modal.Image.debian_slim(python_version="3.11")
              .pip_install("torch==2.6.0", "transformers==4.51.3", "numpy==1.26.4", "safetensors==0.5.3")
              .env({"HF_HOME": str(MOUNT / "hf")})
              .add_local_file(Path(__file__).resolve(), "/root/modal_app.py")
              .add_local_dir(Path(__file__).resolve().parent / "plato", "/root/plato",
-                            ignore=["**/._*", "**/__pycache__/**", "._*"]))
+                            ignore=["**/._*", "**/__pycache__/**", "._*", "readiness*.py",
+                                    "report.py", "assets/readiness*", "assets/replay*", "assets/index.html"]))
+    app = modal.App("plato-transfer", image=image, tags={"project": "plato-transfer"})
+    cores, ram_gib = resources(hardware)
     options = dict(image=image, include_source=False, volumes={str(MOUNT): volume},
-                   cpu=(CORES, CORES), memory=(RAM_GIB * 1024, RAM_GIB * 1024),
+                   cpu=(cores, cores), memory=(ram_gib * 1024, ram_gib * 1024),
                    retries=0, startup_timeout=STARTUP_SECONDS, max_containers=1)
     # Older installed clients call the same one-input lifecycle `max_inputs`.
     if hasattr(modal, "Workspace"):
@@ -136,9 +176,13 @@ def make_backend(hardware, timeout):
         options["max_inputs"] = 1
     if hardware == "CPU":
         return app, app.function(**options, timeout=TIMEOUT["prepare"])(remote_prepare)
+    env = {"HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1"}
+    if hardware == CPU_SCIENCE:
+        env.update(CUDA_VISIBLE_DEVICES="", OMP_NUM_THREADS=str(cores), MKL_NUM_THREADS=str(cores),
+                   OPENBLAS_NUM_THREADS=str(cores))
+        return app, app.function(**options, timeout=timeout, env=env)(stage_cpu)
     worker = {"L4": stage_l4, "L40S": stage_l40s}[hardware]
-    return app, app.function(**options, timeout=timeout, gpu=hardware,
-                             env={"HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1"})(worker)
+    return app, app.function(**options, timeout=timeout, gpu=hardware, env=env)(worker)
 
 
 
@@ -189,13 +233,15 @@ def attempt(ledger, key, pool, gpu, timeout, submit):
     return result
 
 
-def download(ledger, sender, destination, include_states=False):
+def download(ledger, sender, destination, include_states=False, hardware="gpu"):
     import modal
     from modal.volume import FileEntryType
     config = ledger.config()
     workspace_check(config)
     volume = modal.Volume.from_name(VOLUME)
     prefix = PurePosixPath("runs", config["run"], sender)
+    if hardware == "cpu":
+        prefix /= "cpu"
     dest = Path(destination)
     for entry in volume.iterdir(str(prefix), recursive=True):
         path = PurePosixPath(entry.path.lstrip("/"))
@@ -204,6 +250,10 @@ def download(ledger, sender, destination, include_states=False):
         if not include_states and path.name in {"sender-states.npz", "receiver-states.npz"}:
             continue
         relative = path.relative_to(prefix)
+        if hardware != "cpu" and "cpu" in relative.parts:
+            continue
+        if not include_states and ("calibration" in relative.parts or "prescreen" in relative.parts):
+            continue
         if ".." in relative.parts:
             raise ValueError("Unexpected path in Volume listing")
         local = dest / relative
@@ -240,6 +290,9 @@ def make_parser():
             cmd.add_argument("--data", type=Path, help="Original CounterFact JSON; default downloads on remote CPU")
         if verb == "bench":
             cmd.add_argument("--gpu", choices=GPUS, help="Benchmark one device in an isolated Modal app")
+        if verb != "prepare":
+            cmd.add_argument("--hardware", choices=("gpu", "cpu"), default="gpu",
+                             help="CPU selects eight physical cores, 32 GiB and FP32 without requesting a GPU")
         if verb == "download":
             cmd.add_argument("--out", required=True)
             cmd.add_argument("--include-states", action="store_true", help="Include large raw activation caches")
@@ -249,6 +302,8 @@ def make_parser():
         if verb == "run":
             cmd.add_argument("--stage", required=True, choices=tuple(s for s in POOL if s != "bench"))
             cmd.add_argument("--shards", type=int, default=1)
+            cmd.add_argument("--shard", type=int, help="Run only this zero-based shard of the total")
+            cmd.add_argument("--batch-limit", type=int, help="Prescreen only the first N global batches, resumable")
     return parser
 
 
@@ -280,13 +335,24 @@ def main():
             ledger.reconcile(args.attempt, args.gross_usd)
         return
     if cmd == "download":
-        download(ledger, args.sender, args.out, args.include_states)
+        download(ledger, args.sender, args.out, args.include_states, args.hardware)
         return
 
     stage = args.stage if cmd == "run" else cmd
+    cpu_only = getattr(args, "hardware", "gpu") == "cpu"
     shards = getattr(args, "shards", 1)
-    if shards < 1 or (shards != 1 and stage not in {"test", "robustness"}):
-        raise BudgetError("Only test and robustness allow multiple independent shards")
+    single_shard = getattr(args, "shard", None)
+    limit = getattr(args, "batch_limit", None)
+    if shards < 1 or (shards != 1 and stage not in {"prescreen", "test", "robustness"}):
+        raise BudgetError("Only prescreen, test and robustness allow independent shards")
+    if single_shard is not None and not 0 <= single_shard < shards:
+        raise BudgetError("Shard index must be within the requested shard count")
+    if limit is not None and (stage != "prescreen" or limit < 1):
+        raise BudgetError("A positive global batch limit applies only to prescreen")
+    if stage == "prescreen" and not cpu_only:
+        raise BudgetError("Sharded prescreen is available with --hardware cpu")
+    if cpu_only and getattr(args, "gpu", None):
+        raise BudgetError("A GPU model cannot be selected for a CPU benchmark")
     sender = args.sender
     config = ledger.config()
     workspace_check(config)
@@ -299,29 +365,60 @@ def main():
     ledger.freeze("research-source-sha256", state.hexdigest())
     quick = getattr(args, "quick", False)
     mode = "quick" if quick else "full"
-    timeout = getattr(args, "timeout", None) or TIMEOUT[stage]
+    namespace = f"{sender}/cpu/{mode}" if cpu_only else f"{sender}/{mode}"
+    timeout_default = (CPU_TIMEOUT if cpu_only else TIMEOUT)[stage]
+    timeout = getattr(args, "timeout", None)
+    timeout = timeout_default if timeout is None else timeout
+    if not 1 <= timeout <= 86400:
+        raise BudgetError("Function timeout must be between 1 and 86400 seconds")
     prepkey = f"prepare/{sender}"
     if stage != "prepare" and ledger.completed(prepkey) is None:
         raise BudgetError("Prepare this sender and receiver on CPU first")
-    benchkey = lambda gpu: f"{sender}/{mode}/bench/{gpu}"
+    benchkey = lambda gpu: f"{namespace}/bench/{gpu}"
+    prescreen_spec = None
     if stage == "prepare":
         units = [("CPU", 0, prepkey, "pilot" if sender == "qwen" else "replication")]
     elif stage == "bench":
-        units = [(gpu, 0, benchkey(gpu), "pilot") for gpu in ((args.gpu,) if args.gpu else GPUS)]
+        devices = (CPU_SCIENCE,) if cpu_only else ((args.gpu,) if args.gpu else GPUS)
+        units = [(hw, 0, benchkey(hw), "pilot" if sender == "qwen" else "replication") for hw in devices]
     else:
-        trials = [ledger.completed(benchkey(gpu)) for gpu in GPUS]
-        if any(t is None for t in trials):
-            raise BudgetError("Run both GPU benchmarks with this sender and mode first")
-        ledger.freeze(f"{sender}/{mode}/{stage}/shards", str(shards))
-        best = min(trials, key=lambda t: t["estimated_warm_usd_per_world"])["requested_gpu"]
+        if cpu_only:
+            best = CPU_SCIENCE
+        else:
+            trials = [ledger.completed(benchkey(gpu)) for gpu in GPUS]
+            if any(t is None for t in trials):
+                raise BudgetError("Run both GPU benchmarks with this sender and mode first")
+            best = min(trials, key=lambda t: t["estimated_warm_usd_per_world"])["requested_gpu"]
+        if stage == "prescreen":
+            ledger.freeze(f"{namespace}/fact-source", "prescreen")
+        ledger.freeze(f"{namespace}/{stage}/shards", str(shards))
+        if stage == "prescreen":
+            ledger.freeze(f"{namespace}/prescreen/source",
+                          hashlib.sha256((src / "prescreen.py").read_bytes()).hexdigest())
+            prescreen_spec = {"shards": shards, "batch_limit": limit}
+        if cpu_only and stage == "facts":
+            count = ledger.setting(f"{namespace}/prescreen/shards")
+            source = ledger.setting(f"{namespace}/fact-source") or ("prescreen" if count else "inline")
+            ledger.freeze(f"{namespace}/fact-source", source)
+            if source == "prescreen" and not count:
+                raise BudgetError("Wait for the prescreen shard configuration")
+            if count:
+                count = int(count)
+                if any(ledger.completed(f"{namespace}/prescreen/all/{i}-of-{count}") is None for i in range(count)):
+                    raise BudgetError("Complete all uncapped prescreen shards before factual fitting")
+                ledger.freeze(f"{namespace}/prescreen/source",
+                              hashlib.sha256((src / "prescreen.py").read_bytes()).hexdigest())
+                prescreen_spec = {"shards": count, "batch_limit": None}
         pool = "replication" if sender == "pythia" and stage != "robustness" else POOL[stage]
-        units = [(best, index, f"{sender}/{mode}/{stage}/{index}-of-{shards}", pool) for index in range(shards)]
+        name = f"prescreen/{limit or 'all'}" if stage == "prescreen" else stage
+        indices = range(shards) if single_shard is None else [single_shard]
+        units = [(best, i, f"{namespace}/{name}/{i}-of-{shards}", pool) for i in indices]
     data = args.data.read_bytes() if cmd == "prepare" and args.data else None
     if data is not None and hashlib.sha256(data).hexdigest() != COUNTERFACT_SHA256:
         raise BudgetError("Local data differs from the pinned ROME CounterFact release")
-    import modal
     for gpu, shard, key, pool in units:
         def submit(token):
+            import modal
             app, worker = make_backend(gpu, timeout)
             registered = False
             try:
@@ -329,8 +426,10 @@ def main():
                     registered = True
                     if stage == "prepare":
                         return worker.remote(token, config["expires"], run, sender, data)
+                    provider = {"app_id": app.app_id, "function_id": worker.object_id,
+                                "image_id": app.image.object_id}
                     return worker.remote(token, config["expires"], timeout, run, sender, stage,
-                                         gpu, shard, shards, quick)
+                                         gpu, shard, shards, quick, prescreen_spec, provider)
             except Exception as exc:
                 message = str(exc)
                 if not registered and "add a payment method" in message.lower():

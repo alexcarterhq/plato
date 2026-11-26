@@ -15,7 +15,8 @@ import uuid
 CAPS = {"pilot": 10, "facts": 30, "primary": 50, "replication": 50, "robustness": 20, "recovery": 10}
 MAX_CREDIT_USD = Decimal("176.11")
 PREPAID_BUFFER_USD = Decimal("6.11")
-GPU_RATES = {"CPU": Decimal("0"), "CPU-readiness": Decimal("0"), "L4": Decimal("0.000222"), "L40S": Decimal("0.000542")}
+GPU_RATES = {"CPU": Decimal("0"), "CPU-readiness": Decimal("0"), "CPU-science": Decimal("0"),
+             "L4": Decimal("0.000222"), "L40S": Decimal("0.000542")}
 CPU_RATE = Decimal("0.0000131")
 RAM_RATE = Decimal("0.00000222")
 CORES = 2
@@ -36,8 +37,12 @@ def micros(dollars):
     return int((amount * MICRO).to_integral_value(rounding=ROUND_CEILING))
 
 
+def resources(hardware):
+    return {"CPU-science": (8, 32), "CPU-readiness": (4, 32)}.get(hardware, (CORES, RAM_GIB))
+
+
 def rate(hardware):
-    cores, ram_gib = (4, 32) if hardware == "CPU-readiness" else (CORES, RAM_GIB)
+    cores, ram_gib = resources(hardware)
     return GPU_RATES[hardware] + cores * CPU_RATE + ram_gib * RAM_RATE
 
 
@@ -114,6 +119,12 @@ class Ledger:
                 raise BudgetError(f"Frozen setting changed for {key}")
             db.execute("INSERT OR IGNORE INTO manifest VALUES (?,?)", (key, value))
 
+    def setting(self, key):
+        with self.transaction() as db:
+            db.execute("CREATE TABLE IF NOT EXISTS manifest (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+            row = db.execute("SELECT value FROM manifest WHERE key=?", (key,)).fetchone()
+            return row["value"] if row else None
+
     def reserve(self, job, pool, hardware, seconds):
         if pool not in CAPS or hardware not in GPU_RATES or not 0 < seconds <= 86400:
             raise BudgetError("Invalid budget pool, hardware, or runtime")
@@ -124,6 +135,12 @@ class Ledger:
             now = datetime.now(timezone.utc)
             if (datetime.fromisoformat(config["expires"]) - now).total_seconds() <= reserve_seconds:
                 raise BudgetError("Reservation would extend past verified credit or billing-cycle expiry")
+            parts = job.split("/")
+            if len(parts) == 6 and parts[1] == "cpu" and parts[3] == "prescreen":
+                # Bounded pilots and full continuations update the same shard checkpoint.
+                slot = "/".join([*parts[:4], "*", parts[5]])
+                if db.execute("SELECT 1 FROM attempts WHERE job GLOB ? AND status='running'", (slot,)).fetchone():
+                    raise BudgetError("This prescreen shard already has a live attempt")
             rows = db.execute("SELECT status FROM attempts WHERE job=?", (job,)).fetchall()
             if any(row["status"] in {"running", "done"} for row in rows):
                 raise BudgetError(f"Job already running or complete: {job}")

@@ -1,10 +1,12 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from modal_app import ProviderRejectedConfiguration, attempt
+from modal_app import CPU_SCIENCE, ProviderRejectedConfiguration, attempt, main, make_backend
 from plato.budget import BudgetError, Ledger, envelope, rate, STARTUP_SECONDS, SHUTDOWN_SECONDS
 
 
@@ -140,3 +142,46 @@ class BudgetTests(unittest.TestCase):
         row = self.ledger.attempts()[0]
         self.assertEqual(row["id"], token)
         self.assertEqual(row["reserved"], envelope("CPU-readiness", STARTUP_SECONDS + 900 + SHUTDOWN_SECONDS))
+
+    def test_cpu_science_is_metered_for_the_registered_resources(self):
+        self.assertEqual(rate(CPU_SCIENCE) * 3600, Decimal("0.633024"))
+        try:
+            import modal
+        except ImportError:
+            self.skipTest("Modal SDK is optional for offline research")
+        app, fn = make_backend(CPU_SCIENCE, 1800)
+        self.assertEqual(list(app.registered_functions), ["stage_cpu"])
+        self.assertEqual(fn.spec.cpu, (8, 8))
+        self.assertEqual(fn.spec.memory, (32768, 32768))
+        self.assertFalse(fn.spec.gpus)
+
+    def test_cpu_run_admission_and_shards_do_not_require_gpu_benchmarks(self):
+        self.init()
+        attempt(self.ledger, "prepare/qwen", "pilot", "CPU", 30, lambda _: {"prepared": True})
+        argv = ["modal_app.py", "--ledger", str(self.ledger.path), "run", "--hardware", "cpu",
+                "--stage", "test", "--sender", "qwen", "--shards", "4", "--shard", "2"]
+        with patch("modal_app.workspace_check"), patch("modal_app.attempt") as paid, patch("sys.argv", argv):
+            paid.return_value = {"ok": True}
+            main()
+        self.assertEqual(paid.call_args.args[1:5], ("qwen/cpu/full/test/2-of-4", "primary", CPU_SCIENCE, 7200))
+
+    def test_bounded_and_full_runs_require_exclusive_use_of_the_same_prescreen_shard(self):
+        self.init()
+        prefix = "qwen/cpu/full/prescreen"
+        pilot = self.ledger.reserve(f"{prefix}/32/0-of-4", "facts", CPU_SCIENCE, 60)
+        self.ledger.reserve(f"{prefix}/all/1-of-4", "facts", CPU_SCIENCE, 60)
+        with self.assertRaisesRegex(BudgetError, "live attempt"):
+            self.ledger.reserve(f"{prefix}/all/0-of-4", "facts", CPU_SCIENCE, 60)
+        self.ledger.finish(pilot, {"cases": 64}, 100)
+        self.ledger.reserve(f"{prefix}/all/0-of-4", "facts", CPU_SCIENCE, 60)
+
+    def test_cpu_factual_fit_waits_for_complete_screen_coverage(self):
+        self.init()
+        attempt(self.ledger, "prepare/qwen", "pilot", "CPU", 30, lambda _: {"prepared": True})
+        self.ledger.freeze("qwen/cpu/full/prescreen/shards", "4")
+        argv = ["modal_app.py", "--ledger", str(self.ledger.path), "run", "--hardware", "cpu",
+                "--stage", "facts", "--sender", "qwen"]
+        with patch("modal_app.workspace_check"), patch("modal_app.attempt") as paid, patch("sys.argv", argv):
+            with self.assertRaisesRegex(BudgetError, "uncapped prescreen"):
+                main()
+        paid.assert_not_called()
