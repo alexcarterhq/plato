@@ -1,0 +1,30 @@
+name: Benchmark prompt pilot
+on: workflow_dispatch
+permissions:
+  contents: read
+
+jobs:
+  pilot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      HF_HUB_DISABLE_XET: "1"
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      OMP_NUM_THREADS: "4"
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install pinned CPU dependencies
+        run: |
+          python -m pip install --no-cache-dir torch==2.6.0 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install --no-cache-dir transformers==4.51.3 numpy==1.26.4 safetensors==0.5.3
+      - name: Compare the two fixed formats on benchmark world 9
+        run: python scripts/prompt_pilot.py --output prompt-pilot.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-world-9-prompt-pilot
+          path: prompt-pilot.json
+          if-no-files-found: error
