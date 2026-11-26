@@ -16,7 +16,7 @@ video = ["pillow>=10"]
 test = ["pytest>=8", "pillow>=10"]
 
 [project.scripts]
-plato = "plato.cli:main"
+plato = "plato.entrypoint:main"
 
 [tool.hatch.build]
 exclude = ["**/._*", "**/__pycache__/**", "**/*.pyc"]
