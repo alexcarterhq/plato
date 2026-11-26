@@ -125,10 +125,10 @@ def _verify_rows(rows, raw_world, prompt_world, world_ids, layout):
             _require(first_answer(answer) == row["first_answer"], "First line mismatch")
         if arm == "self":
             source = w.sender_text(v)
-            _require(row.get("source_prompt", source) == source, "Self vector has incorrect source prompt")
+            _require(row.get("source_prompt") == source, "Self vector has incorrect source prompt")
             digest = row["packet_sha256"]
             _require(isinstance(digest,str) and len(digest) == 64 and all(c in "0123456789abcdef" for c in digest)
-                     and row.get("packet_bytes",4096) == 4096, "Invalid receiver vector metadata")
+                     and row.get("packet_bytes") == 4096, "Invalid receiver vector metadata")
             packet = packets.setdefault((i,v,layer), digest)
             _require(packet == digest, "The receiver's vector differs across rulebooks")
         by_lane[spec].append(row)
@@ -137,7 +137,10 @@ def _verify_rows(rows, raw_world, prompt_world, world_ids, layout):
     for arm,book,layer in layout:
         values = by_lane[arm,book,layer]
         metric = _summary((r["world"],r["correct"]) for r in values)
-        metric.update(label=_label(arm,book,layer), correct=sum(r["correct"] for r in values))
+        alphabet = CATEGORIES if arm == "sender" else tuple(map(str,range(1,9)))
+        valid = sum(any(exact_answer(r["answer"],token) for token in alphabet) for r in values)
+        metric.update(label=_label(arm,book,layer), correct=sum(r["correct"] for r in values),
+                      valid_answer=valid, answer_kind="category" if arm=="sender" else "destination")
         if metric["correct"] == 0:
             metric["any_success_world_upper_95"] = -math.expm1(math.log(.05)/metric["worlds"])
         result[_lane(arm,book,layer)] = metric
@@ -314,7 +317,9 @@ def _report(summary, out):
              "with seed 73639. A zero-width interval means the observed worlds all had the same accuracy. "
              "After zero successful worlds the one-sided 95% exact upper bound on the chance of any correct variant in a fresh "
              "world is 4.6% for 64 validation worlds. The required rates are 95% for exact sender and full-evidence answers and 80% for the same-model "
-             "patch on both books at the same layer. Identity replacement must preserve logits within 0.0001.", ""]
+             "patch on both books at the same layer. Identity replacement must preserve logits within 0.0001. "
+             "Valid answer form counts completions that match any of the eight category words for sender retrieval "
+             "or any of the eight destination numbers for receiver tasks under the same exact-answer scorer.", ""]
     if summary.get("selected_development_format"):
         lines += [f"The eight-world development grid nominated **{summary['selected_development_format']}** "
                   "using the frozen ranking rule. Development scores were excluded from validation.", ""]
@@ -347,9 +352,9 @@ def _report(summary, out):
                 for layer,error in sorted(layers.items(),key=lambda a:int(a[0])):
                     lines.append(f"| {model.title()} | {layer} | {error:.8g} |")
             lines.append("")
-        lines += ["| Condition | Correct / scored | Accuracy | World bootstrap 95% interval |","|---|---:|---:|---:|"]
+        lines += ["| Condition | Correct / scored | Valid answer form | Accuracy | World bootstrap 95% interval |","|---|---:|---:|---:|---:|"]
         for m in group["metrics"].values():
-            lines.append(f"| {m['label']} | {m['correct']} / {m['observations']} | {_pct(m['mean'])} | "
+            lines.append(f"| {m['label']} | {m['correct']} / {m['observations']} | {m['valid_answer']} / {m['observations']} | {_pct(m['mean'])} | "
                          f"{_pct(m['low'])} to {_pct(m['high'])} |")
         lines.append("")
     lines += ["## Reproduce", "",

@@ -21,7 +21,7 @@ function draw() {
   byId("source").textContent = row.source_prompt || "";
   byId("packet").textContent = row.packet_sha256 ? "BF16 packet SHA-256 " + row.packet_sha256 : "";
   const metric = group.metrics[lane];
-  byId("metric").textContent = "Across " + metric.worlds + " worlds, this condition scored " + metric.correct + " / " + metric.observations + " (" + percent(metric.mean) + ").";
+  byId("metric").textContent = "Across " + metric.worlds + " worlds, this condition scored " + metric.correct + " / " + metric.observations + " (" + percent(metric.mean) + "). " + metric.valid_answer + " answers were valid " + metric.answer_kind + " values.";
   byId("status").textContent = group.label + " · World " + currentWorld + " · " + info.categories[variant];
   for (const tr of byId("metrics").rows) tr.setAttribute("aria-current", String(tr.dataset.lane === lane));
 }
