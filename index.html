@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Plato · GPU positive controls</title>
+<meta name="description" content="Replay measured GPU positive controls for two frozen model pairs. Inspect the prompt, rulebook, raw answer and aggregate result for every world.">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Can one frozen model tell another a fact only it saw?">
+<meta property="og:description" content="Replay the GPU positive controls for two frozen model pairs. Change the secret or rulebook and inspect every recorded answer.">
+<meta property="og:url" content="https://alexcarterhq.github.io/plato/">
+<meta property="og:image" content="https://alexcarterhq.github.io/plato/controls.png">
+<meta property="og:image:width" content="1200"><meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Measured sender retrieval, full-evidence lookup and receiver-vector accuracy by model pair, with world-level uncertainty.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Can one frozen model tell another a fact only it saw?">
+<meta name="twitter:description" content="Inspect the model inputs, completions and results from Plato’s GPU positive controls.">
+<meta name="twitter:image" content="https://alexcarterhq.github.io/plato/controls.png">
+<meta name="twitter:image:alt" content="GPU positive-control accuracy and world-level uncertainty for Qwen and Pythia paired with SmolLM2.">
+<link rel="stylesheet" href="replay.css">
+<style>
+.controls{grid-template-columns:repeat(auto-fit,minmax(135px,1fr))}.experiment{align-items:start;margin-block:24px}
+.evidence pre{max-height:30rem}.readout strong{font:500 1.35rem Georgia,serif}caption{text-align:left;font-weight:650}
+.detail{margin-block:10px 30px}.detail summary{cursor:pointer;color:var(--accent)}.masthead nav a{white-space:nowrap}
+td:first-child{min-width:10rem}.scroll{overflow-x:auto}#metric{color:var(--muted)}#target{margin-block:8px}
+</style></head>
+<body><header><div class="wrap masthead"><a class="brand" href="index.html">Plato<span class="brand-mark"></span></a>
+<span class="mast-label">GPU positive controls</span><nav><a href="report.md">Report</a><a href="plato-gpu-controls.tar.gz">Raw data</a></nav></div></header>
+<main class="wrap">
+<section class="intro"><h1>Can each model do its part?</h1><p id="overview"></p></section>
+<section aria-label="Recorded case"><div class="controls">
+<label>Dataset<select id="dataset"></select></label><label>World<select id="world"></select></label>
+<label>Secret category<select id="variant"></select></label><label>Condition<select id="lane"></select></label>
+</div><p id="status" role="status" aria-live="polite"></p>
+<div class="experiment"><section class="evidence"><h2>Model input</h2><pre id="prompt"></pre>
+<details class="detail" id="source-detail"><summary>Evidence used to produce the vector</summary><pre id="source"></pre><p id="packet" class="sub"></p></details></section>
+<section class="evidence"><h2>Recorded completion</h2><pre id="answer"></pre><p id="target"></p><p id="metric"></p></section></div></section>
+<section class="aggregate" id="aggregates"><h2>Across the selected dataset</h2><p id="cohort" class="sub"></p>
+<div class="table-scroll"><table><thead><tr><th>Condition</th><th>Correct / scored</th><th>Accuracy</th><th>World bootstrap 95% interval</th></tr></thead>
+<tbody id="metrics"></tbody></table></div></section>
+<figure style="margin-top:24px"><img src="controls.svg" alt="GPU control accuracy by model and interface, with 95 percent intervals from resampling whole worlds"><figcaption>Each vector series shows the candidate layer with the highest accuracy on its weaker book. Dashed lines mark the required accuracy.</figcaption></figure>
+<footer><a href="summary.json">Machine-readable scores</a><a href="report.md">Methods and identity checks</a>
+<a href="plato-gpu-controls.tar.gz.sha256">Archive checksum</a></footer></main>
+<noscript>Read the aggregate results in <a href="report.md">the report</a> or inspect the raw records in the archive.</noscript>
+<script src="controls-index.js"></script><script src="gpu-controls.js"></script></body></html>
