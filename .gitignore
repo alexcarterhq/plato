@@ -1,0 +1,12 @@
+._*
+.DS_Store
+__pycache__/
+.pytest_cache/
+*.py[co]
+*.egg-info/
+.venv/
+.plato/
+results/
+release/
+dist/
+build/

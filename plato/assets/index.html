@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><meta name="theme-color" content="#f8f8f1">
+<title>Plato · Activation replay</title><link rel="stylesheet" href="replay.css">
+<script defer src="manifest.js"></script><script defer src="replay.js"></script></head>
+<body><header><div class="wrap masthead"><a class="brand" href="#top" aria-label="Plato home">Plato<span class="brand-mark" aria-hidden="true"></span></a><span class="mast-label">Activation replay</span><nav aria-label="Research artifacts"><a href="report.md">Report</a><a href="summary.json">Data</a></nav></div></header>
+<main class="wrap" id="top"><section class="intro"><div><h1>Can one frozen model tell another a fact only it saw?</h1><p>Only the sender sees an entity’s category. Only the receiver sees the rule that turns it into a destination. Change either input to inspect what the receiver actually answered.</p></div></section>
+<noscript>This replay needs JavaScript. The report and data links above work without it.</noscript>
+<div id="empty" hidden><h2>No held-out recordings</h2><p>Run the held-out evaluation to populate this replay.</p></div>
+<section id="diagnostics" hidden><h2>Calibration and validation</h2><div id="diagnostic-detail"></div><figure id="validation-figure" hidden><img alt="Validation accuracy under the matched, mismatched, receiver oracle, and generated-word conditions. Detailed values are in the full report."><figcaption>Validation controls with 95% whole-world bootstrap intervals</figcaption></figure></section>
+<div id="app" hidden>
+<form class="controls" aria-label="Select a recorded case" onsubmit="return false">
+<label>Sender<select id="sender"></select></label><label>World<select id="world"></select></label><label>Private category<select id="variant"></select></label><label>Receiver rulebook<select id="book"></select></label><label>Message<select id="method"></select></label></form>
+<div id="status" role="status" aria-live="polite"></div>
+<section class="experiment" aria-label="Selected packet replay">
+<div class="evidence"><div class="section-title"><span class="mark sender-mark" aria-hidden="true"></span><h2>Sender’s evidence</h2></div><p class="sub" id="sender-context">Private input to the sending model</p><pre id="sender-prompt"></pre></div>
+<div class="evidence"><div class="section-title"><span class="mark receiver-mark" aria-hidden="true"></span><h2>Receiver’s rulebook</h2></div><p class="sub">Input for the selected condition</p><pre id="receiver-prompt"></pre></div></section>
+<section class="responses"><h2>Recorded responses</h2><p class="sub">Expected destination <strong id="target"></strong>. The sender retrieval control answers the category instead.</p>
+<div class="table-scroll" tabindex="0" role="region" aria-label="Recorded responses by condition"><table><thead><tr><th scope="col">Condition</th><th scope="col">Raw answer</th><th scope="col">Result</th><th scope="col">Payload</th></tr></thead><tbody id="rows"></tbody></table></div>
+</section><section class="aggregate"><h2>Across held-out worlds</h2><p id="aggregate-intro"></p><div class="readouts" id="readouts"></div><figure><img id="cond-figure" alt="Held-out accuracy for the matched packet, mismatched packet, receiver’s own state, and generated word."><figcaption>Matched, mismatched, receiver-oracle, and generated-word conditions</figcaption></figure><figure><img id="lift-figure" alt="Whole-world confidence intervals for accuracy gains over mismatched packets. Values for the selected sender are listed above."><figcaption>Dots show mean paired accuracy differences. Bars show 95% whole-world bootstrap intervals.</figcaption></figure></section></div>
+<footer><a href="report.md">Read the full report</a><a href="summary.json" download>Summary JSON</a><a href="predictions.jsonl.gz" download>Individual predictions</a></footer></main></body></html>

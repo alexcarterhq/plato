@@ -1,0 +1,101 @@
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
+import tempfile
+import unittest
+from pathlib import Path
+
+from modal_app import attempt
+from plato.budget import BudgetError, Ledger, envelope, STARTUP_SECONDS, SHUTDOWN_SECONDS
+
+
+class BudgetTests(unittest.TestCase):
+    def setUp(self):
+        self.work = tempfile.TemporaryDirectory()
+        self.addCleanup(self.work.cleanup)
+        self.ledger = Ledger(Path(self.work.name) / "ledger.sqlite")
+        self.deadline = datetime.now(timezone.utc) + timedelta(days=1)
+
+    def init(self, limit=170):
+        self.ledger.initialize(limit, limit + 20, 20, 0, self.deadline, "test")
+
+    def test_preflight(self):
+        for credit, gross, spent, net in ((180, 200, 20, 0), (170, 170, 0, 1), (170, 50, 50, 0)):
+            with self.assertRaises(BudgetError):
+                self.ledger.initialize(credit, gross, spent, net, self.deadline, "test")
+        self.init()
+        with self.assertRaises(BudgetError):
+            self.init()
+        self.assertEqual(self.ledger.config()["cap"], 170_000_000)
+
+    def test_rejects_budget_crossing_with_concurrent_launches(self):
+        self.init(1)
+
+        def reserve(i):
+            try:
+                return self.ledger.reserve(str(i), "pilot", "L4", 1800)
+            except BudgetError:
+                return None
+
+        with ThreadPoolExecutor(max_workers=8) as workers:
+            tokens = list(workers.map(reserve, range(8)))
+        self.assertEqual(sum(i is not None for i in tokens), 1)
+        self.assertLessEqual(sum(r["charged"] for r in self.ledger.attempts()), 1_000_000)
+
+    def test_duplicate_and_interrupted_attempt(self):
+        self.init()
+        first = self.ledger.reserve("worlds", "primary", "L4", 300)
+        with self.assertRaises(BudgetError):
+            self.ledger.reserve("worlds", "primary", "L4", 300)
+        self.ledger.finish(first)
+        second = self.ledger.reserve("worlds", "primary", "L4", 300)
+        self.ledger.finish(second, {"score": 0.8}, 134)
+        failed, done = self.ledger.attempts()
+        self.assertEqual(failed["charged"], envelope("L4", STARTUP_SECONDS + 300 + SHUTDOWN_SECONDS))
+        self.assertEqual(done["pool"], "recovery")
+        self.assertEqual(self.ledger.completed("worlds"), {"score": 0.8})
+        self.ledger.reconcile(first, 0.03)
+        self.assertEqual(self.ledger.attempts()[0]["charged"], 30_000)
+        with self.assertRaises(BudgetError):
+            self.ledger.reserve("worlds", "primary", "L4", 300)
+
+    def test_period_cutoff_and_phase_cap(self):
+        self.init()
+        with self.assertRaises(BudgetError):
+            self.ledger.reserve("whole-day", "primary", "L4", 86400)
+        with self.assertRaises(BudgetError):
+            self.ledger.reserve("expensive", "pilot", "L40S", 36000)
+
+    def test_wrapper_never_submits_before_admission_and_reuses_results(self):
+        self.init(1)
+        called = []
+
+        def remote(token):
+            called.append(token)
+            return {"worlds": 8}
+
+        with self.assertRaises(BudgetError):
+            attempt(self.ledger, "too costly", "pilot", "L40S", 3600, remote)
+        one = attempt(self.ledger, "can afford", "pilot", "L4", 60, remote)
+        two = attempt(self.ledger, "can afford", "pilot", "L4", 60, remote)
+        self.assertEqual(one, two)
+        self.assertEqual(len(called), 1)
+
+    def test_freezes_shards_and_preserves_ambiguous_remote_reservations(self):
+        self.init()
+        self.ledger.freeze("test/shards", "4")
+        self.ledger.freeze("test/shards", "4")
+        with self.assertRaises(BudgetError):
+            self.ledger.freeze("test/shards", "1")
+
+        def disconnect(token):
+            raise ConnectionError("RPC acknowledgement lost")
+
+        with self.assertRaises(ConnectionError):
+            attempt(self.ledger, "pending", "primary", "L4", 30, disconnect)
+        with self.assertRaises(BudgetError):
+            self.ledger.reserve("pending", "primary", "L4", 30)
+        self.assertEqual(self.ledger.attempts()[0]["status"], "running")
+
+    def test_zero_net_with_credit_below_gross_ceiling(self):
+        self.ledger.initialize(160, 1000, 3, 0, self.deadline, "test")
+        self.assertEqual(self.ledger.config()["cap"], 160_000_000)

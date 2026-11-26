@@ -1,0 +1,25 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "plato-transfer"
+version = "0.1.0"
+description = "A controlled experiment in private-fact transfer between frozen models"
+requires-python = ">=3.11"
+dependencies = ["numpy>=1.26,<3", "matplotlib>=3.8,<4"]
+
+[project.optional-dependencies]
+models = ["torch==2.6.0", "transformers==4.51.3", "safetensors==0.5.3"]
+modal = ["modal>=1.2.2,<2"]
+video = ["pillow>=10"]
+test = ["pytest>=8", "pillow>=10"]
+
+[project.scripts]
+plato = "plato.cli:main"
+
+[tool.hatch.build]
+exclude = ["**/._*", "**/__pycache__/**", "**/*.pyc"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["plato"]
