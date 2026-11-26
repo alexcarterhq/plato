@@ -13,30 +13,33 @@ from plato.control_release import generate  # noqa: E402
 def clip(source, summary, path):
     import subprocess
     from clip import HEIGHT, WIDTH, _card
-    with gzip.open(source/"gpu-controls/qwen/observations.jsonl.gz", "rt",encoding="utf8") as file:
-        rows = [r for r in map(json.loads,file) if r["world"]==0 and r["variant"] in (0,1)]
+    fresh = "amended-qwen" in summary["groups"]
+    stage,first_world = ("gpu-amended",10000) if fresh else ("gpu-controls",0)
+    pair = ("amended-" if fresh else "original-") + "qwen"
+    interface = summary["groups"][pair]["interface"]
+    with gzip.open(source/stage/"qwen/observations.jsonl.gz", "rt",encoding="utf8") as file:
+        rows = [r for r in map(json.loads,file) if r["world"]==first_world and r["variant"] in (0,1)]
     index = {(r["variant"],r["condition"],r["rulebook"]):r for r in rows if r["condition"]=="full"}
     def show(row):
         line = row["first_answer"] or "⟨empty⟩"
         short = line[:120] + ("…" if len(line)>120 else "")
         return f"Expected {row['target']}. SmolLM2 answered {short!r}."
     groups=summary["groups"]
-    pair="original-qwen"
     m=groups[pair]["metrics"]
     first, changed, other = index[0,"full",0], index[1,"full",0], index[0,"full",1]
     frames = [
         _card("Can one frozen model tell another a fact only it saw?",
               "First, can SmolLM2 read a complete record and use its private table to choose a destination?",
-              "Plato   /   Original GPU validation controls"),
+              f"Plato   /   GPU validation · {interface} interface"),
         _card("Change the secret.",f"{first['category'].title()}. {show(first)}\n{changed['category'].title()}. {show(changed)}",
-              "Original validation world 0   /   Same rulebook, full evidence supplied"),
+              f"Validation world {first_world}   /   Same rulebook, full evidence supplied"),
         _card("Change the rulebook.",f"The category is {other['category']}. {show(other)}",
-              "Original validation world 0   /   Second rulebook, full evidence supplied"),
-        _card("Across 64 original worlds",
+              f"Validation world {first_world}   /   Second rulebook, full evidence supplied"),
+        _card("Across 64 validation worlds",
               "Qwen retrieval " + f"{m['sender_None_None']['correct']}/512.\n"
               + "SmolLM2 with all records " + f"{m['full_0_None']['correct']}/512 on the first book and "
               + f"{m['full_1_None']['correct']}/512 on the second.",
-              "Eight private categories per world   /   Exact first-line answers"),
+              f"Eight categories per world   /   {interface} interface, exact first-line answers"),
         _card("What the controls establish",summary["statement"],
               "Open the replay to inspect every prompt, answer and score."),
     ]
