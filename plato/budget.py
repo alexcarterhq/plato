@@ -15,7 +15,7 @@ import uuid
 CAPS = {"pilot": 10, "facts": 30, "primary": 50, "replication": 50, "robustness": 20, "recovery": 10}
 MAX_CREDIT_USD = Decimal("176.11")
 PREPAID_BUFFER_USD = Decimal("6.11")
-GPU_RATES = {"CPU": Decimal("0"), "L4": Decimal("0.000222"), "L40S": Decimal("0.000542")}
+GPU_RATES = {"CPU": Decimal("0"), "CPU-readiness": Decimal("0"), "L4": Decimal("0.000222"), "L40S": Decimal("0.000542")}
 CPU_RATE = Decimal("0.0000131")
 RAM_RATE = Decimal("0.00000222")
 CORES = 2
@@ -37,7 +37,8 @@ def micros(dollars):
 
 
 def rate(hardware):
-    return GPU_RATES[hardware] + CORES * CPU_RATE + RAM_GIB * RAM_RATE
+    cores, ram_gib = (4, 32) if hardware == "CPU-readiness" else (CORES, RAM_GIB)
+    return GPU_RATES[hardware] + cores * CPU_RATE + ram_gib * RAM_RATE
 
 
 def envelope(hardware, seconds):
@@ -139,7 +140,7 @@ class Ledger:
                        (token, job, pool, amount, amount, now.isoformat()))
         return token
 
-    def finish(self, token, result=None, amount=None):
+    def finish(self, token, result=None, amount=None, error=None):
         """Missing result or unknown bill leaves the full reservation encumbered."""
         with self.transaction() as db:
             row = db.execute("SELECT * FROM attempts WHERE id=?", (token,)).fetchone()
@@ -149,7 +150,8 @@ class Ledger:
             if not isinstance(charged, int) or charged < 0:
                 raise BudgetError("Expected a nonnegative microdollar charge")
             db.execute("UPDATE attempts SET status=?,charged=?,result=? WHERE id=?",
-                       ("done" if result is not None else "failed", charged, json.dumps(result), token))
+                       ("done" if result is not None else "failed", charged,
+                        json.dumps(result if error is None else {"error": error}), token))
 
     def completed(self, job):
         with self.transaction() as db:

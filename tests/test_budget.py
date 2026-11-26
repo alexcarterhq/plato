@@ -4,8 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from modal_app import attempt
-from plato.budget import BudgetError, Ledger, envelope, STARTUP_SECONDS, SHUTDOWN_SECONDS
+from modal_app import ProviderRejectedConfiguration, attempt
+from plato.budget import BudgetError, Ledger, envelope, rate, STARTUP_SECONDS, SHUTDOWN_SECONDS
 
 
 class BudgetTests(unittest.TestCase):
@@ -119,3 +119,24 @@ class BudgetTests(unittest.TestCase):
     def test_positive_net_without_expiry_does_not_admit_prepaid_work(self):
         with self.assertRaises(BudgetError):
             self.ledger.initialize("176.11", 250, 0, 30, None, "test")
+
+    def test_registration_denial_is_terminal_and_conservatively_charged(self):
+        self.init()
+
+        def denied(token):
+            raise ProviderRejectedConfiguration("Please add a payment method to use L4 GPU functions.")
+
+        with self.assertRaises(ProviderRejectedConfiguration):
+            attempt(self.ledger, "bench-denied", "pilot", "L4", 90, denied)
+        row = self.ledger.attempts()[0]
+        self.assertEqual(row["status"], "failed")
+        self.assertEqual(row["charged"], row["reserved"])
+        self.assertIn("payment method", row["result"])
+
+    def test_larger_readiness_cpu_uses_its_actual_resource_rate(self):
+        self.init()
+        self.assertEqual(rate("CPU-readiness"), 2 * rate("CPU"))
+        token = self.ledger.reserve("readiness", "pilot", "CPU-readiness", 900)
+        row = self.ledger.attempts()[0]
+        self.assertEqual(row["id"], token)
+        self.assertEqual(row["reserved"], envelope("CPU-readiness", STARTUP_SECONDS + 900 + SHUTDOWN_SECONDS))

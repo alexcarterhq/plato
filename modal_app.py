@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-from contextlib import ExitStack
 from datetime import datetime
 import hashlib
 import json
@@ -116,7 +115,7 @@ def stage_l40s(*args):
     return remote_stage(*args)
 
 
-def make_backend(timeout=TIMEOUT["test"]):
+def make_backend(hardware, timeout):
     import modal
 
     app = modal.App("plato-transfer", tags={"project": "plato-transfer"})
@@ -135,11 +134,12 @@ def make_backend(timeout=TIMEOUT["test"]):
         options["single_use_containers"] = True
     else:
         options["max_inputs"] = 1
-    prepare = app.function(**options, timeout=TIMEOUT["prepare"])(remote_prepare)
-    workers = {gpu: app.function(**options, timeout=timeout, gpu=gpu,
-                                 env={"HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1"})(fn)
-               for gpu, fn in (("L4", stage_l4), ("L40S", stage_l40s))}
-    return app, prepare, workers
+    if hardware == "CPU":
+        return app, app.function(**options, timeout=TIMEOUT["prepare"])(remote_prepare)
+    worker = {"L4": stage_l4, "L40S": stage_l40s}[hardware]
+    return app, app.function(**options, timeout=timeout, gpu=hardware,
+                             env={"HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1"})(worker)
+
 
 
 def workspace_check(config):
@@ -159,6 +159,10 @@ def workspace_check(config):
         raise BudgetError(f"Authenticated workspace {workspace_name!r} differs from verified workspace")
 
 
+class ProviderRejectedConfiguration(RuntimeError):
+    """Modal refused to create the requested Function before a worker was dispatched."""
+
+
 def attempt(ledger, key, pool, gpu, timeout, submit):
     existing = ledger.completed(key)
     if existing is not None:
@@ -168,6 +172,9 @@ def attempt(ledger, key, pool, gpu, timeout, submit):
     print(f"Reserved {key}: {token}", flush=True)
     try:
         result = submit(token)
+    except ProviderRejectedConfiguration as exc:
+        ledger.finish(token, error=str(exc))
+        raise
     except BaseException:
         # A network or controller failure cannot certify that the worker stopped.
         print(f"Attempt {token} remains fully reserved. Verify termination in Modal "
@@ -222,7 +229,8 @@ def make_parser():
     verbs.add_parser("status")
     settle = verbs.add_parser("reconcile", help="Record verified provider gross cost for a terminal attempt")
     settle.add_argument("--attempt", required=True)
-    settle.add_argument("--gross-usd", required=True)
+    settle.add_argument("--gross-usd", help="Verified provider charge; omit to retain the full estimate")
+    settle.add_argument("--reason", help="Provider message when closing a stopped reservation")
     settle.add_argument("--confirmed-stopped", action="store_true",
                         help="Mark an interrupted local controller attempt terminal after checking Modal")
     for verb in ("prepare", "bench", "run", "download"):
@@ -230,6 +238,8 @@ def make_parser():
         cmd.add_argument("--sender", choices=("qwen", "pythia"), required=True)
         if verb == "prepare":
             cmd.add_argument("--data", type=Path, help="Original CounterFact JSON; default downloads on remote CPU")
+        if verb == "bench":
+            cmd.add_argument("--gpu", choices=GPUS, help="Benchmark one device in an isolated Modal app")
         if verb == "download":
             cmd.add_argument("--out", required=True)
             cmd.add_argument("--include-states", action="store_true", help="Include large raw activation caches")
@@ -258,11 +268,16 @@ def main():
                           "attempts": rows}, indent=2))
         return
     if cmd == "reconcile":
+        if not args.confirmed_stopped and args.gross_usd is None:
+            raise BudgetError("Specify verified gross usage or confirm that the worker stopped")
         if args.confirmed_stopped:
             statuses = {r["id"]: r["status"] for r in ledger.attempts()}
             if statuses.get(args.attempt) == "running":
-                ledger.finish(args.attempt)
-        ledger.reconcile(args.attempt, args.gross_usd)
+                ledger.finish(args.attempt, error=args.reason)
+            elif args.attempt not in statuses:
+                raise BudgetError("No attempt with this identifier")
+        if args.gross_usd is not None:
+            ledger.reconcile(args.attempt, args.gross_usd)
         return
     if cmd == "download":
         download(ledger, args.sender, args.out, args.include_states)
@@ -278,9 +293,9 @@ def main():
     run = config["run"]
     src = Path(__file__).resolve().parent / "plato"
     state = hashlib.sha256()
-    for file in sorted(src.glob("*.py")):
-        if not file.name.startswith("._") and file.name not in {"report.py", "budget.py"}:
-            state.update(file.name.encode() + b"\x00" + file.read_bytes())
+    # Preserve the original primary experiment manifest across independent analyses.
+    for name in ('__init__.py', '__main__.py', 'cli.py', 'config.py', 'facts.py', 'models.py', 'pipeline.py', 'subjects.py', 'trials.py', 'worlds.py'):
+        state.update(name.encode() + b"\x00" + (src / name).read_bytes())
     ledger.freeze("research-source-sha256", state.hexdigest())
     quick = getattr(args, "quick", False)
     mode = "quick" if quick else "full"
@@ -292,7 +307,7 @@ def main():
     if stage == "prepare":
         units = [("CPU", 0, prepkey, "pilot" if sender == "qwen" else "replication")]
     elif stage == "bench":
-        units = [(gpu, 0, benchkey(gpu), "pilot") for gpu in GPUS]
+        units = [(gpu, 0, benchkey(gpu), "pilot") for gpu in ((args.gpu,) if args.gpu else GPUS)]
     else:
         trials = [ledger.completed(benchkey(gpu)) for gpu in GPUS]
         if any(t is None for t in trials):
@@ -305,25 +320,25 @@ def main():
     if data is not None and hashlib.sha256(data).hexdigest() != COUNTERFACT_SHA256:
         raise BudgetError("Local data differs from the pinned ROME CounterFact release")
     import modal
-    with ExitStack() as stack:
-        backend = None
-
+    for gpu, shard, key, pool in units:
         def submit(token):
-            nonlocal backend
-            if backend is None:
-                app, prepare, worker = make_backend(timeout)
-                stack.enter_context(modal.enable_output())
-                stack.enter_context(app.run())
-                backend = prepare, worker
-            prepare, worker = backend
-            if stage == "prepare":
-                return prepare.remote(token, config["expires"], run, sender, data)
-            return worker[gpu].remote(
-                token, config["expires"], timeout, run, sender, stage, gpu, shard, shards, quick)
+            app, worker = make_backend(gpu, timeout)
+            registered = False
+            try:
+                with modal.enable_output(), app.run():
+                    registered = True
+                    if stage == "prepare":
+                        return worker.remote(token, config["expires"], run, sender, data)
+                    return worker.remote(token, config["expires"], timeout, run, sender, stage,
+                                         gpu, shard, shards, quick)
+            except Exception as exc:
+                message = str(exc)
+                if not registered and "add a payment method" in message.lower():
+                    raise ProviderRejectedConfiguration(message) from exc
+                raise
 
-        for gpu, shard, key, pool in units:
-            result = attempt(ledger, key, pool, gpu, timeout, submit)
-            print(json.dumps(result, indent=2))
+        result = attempt(ledger, key, pool, gpu, timeout, submit)
+        print(json.dumps(result, indent=2))
 
 
 if __name__ == "__main__":

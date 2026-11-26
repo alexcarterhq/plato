@@ -10,6 +10,8 @@ This repository publishes the dated protocol and measurement code. Primary resul
 
 [Experimental protocol](plato/protocol.md) · [Model revisions](plato/config.py) · [CounterFact subject linkage](plato/assets/counterfact-subjects.md)
 
+The first public integration check used the exact Qwen and SmolLM2 weights on one benchmark world. Identity patching preserved both models’ logits exactly. Qwen repeated the correct category in a sentence for each of two variants. SmolLM2 also returned a category when the rulebook required a destination, scoring 0/4 with the full evidence. These are CPU prompt checks. The cross-model estimate requires the private-world experiment. [Recorded completions and packet hashes](https://github.com/alexcarterhq/plato/actions/runs/45867697648)
+
 ## Reproduce an observation
 
 Requires Python 3.11 or later. From a checkout:
@@ -41,6 +43,8 @@ plato reproduce --quick --input results
 ```
 
 Repeat with `--sender pythia` for the second pair. The validation gate keeps the test worlds sealed if the positive controls fail. The diagnostics, failed checks, eligible factual counts and per-world rows support the report for either outcome. The test split has 250 independent worlds. All eight counterfactual variants and both rulebooks stay in the same bootstrap cluster.
+
+Two controls can be measured before fitting either map. The CPU readiness runner measures Qwen retrieval and SmolLM2 with full text on the 64 validation worlds using FP32. Each `python readiness_runner.py --shard I --shards 4` invocation processes one of four disjoint sets. Its report names the hardware and precision. Modal requires a valid payment method on file to register GPU functions, including for funded accounts. [Modal GPU guide](https://modal.com/docs/guide/gpu)
 
 For local GPU execution install `.[models]` with Python 3.11 and use `plato stage --help`. Keep separate output directories for each pair and for quick and full runs. The local stage command bypasses Modal billing entirely. For a warm benchmark, use `plato stage bench --sender qwen --out results/bench-qwen`.
 
