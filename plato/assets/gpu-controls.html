@@ -1,6 +1,20 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Plato · GPU positive controls</title><link rel="stylesheet" href="replay.css">
+<title>Plato · GPU positive controls</title>
+<meta name="description" content="Replay measured GPU positive controls for two frozen model pairs. Inspect the prompt, rulebook, raw answer and aggregate result for every world.">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Can one frozen model tell another a fact only it saw?">
+<meta property="og:description" content="Replay the GPU positive controls for two frozen model pairs. Change the secret or rulebook and inspect every recorded answer.">
+<meta property="og:url" content="https://alexcarterhq.github.io/plato/">
+<meta property="og:image" content="https://alexcarterhq.github.io/plato/controls.png">
+<meta property="og:image:width" content="1200"><meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Measured sender retrieval, full-evidence lookup and receiver-vector accuracy by model pair, with world-level uncertainty.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Can one frozen model tell another a fact only it saw?">
+<meta name="twitter:description" content="Inspect the model inputs, completions and results from Plato’s GPU positive controls.">
+<meta name="twitter:image" content="https://alexcarterhq.github.io/plato/controls.png">
+<meta name="twitter:image:alt" content="GPU positive-control accuracy and world-level uncertainty for Qwen and Pythia paired with SmolLM2.">
+<link rel="stylesheet" href="replay.css">
 <style>
 .controls{grid-template-columns:repeat(auto-fit,minmax(135px,1fr))}.experiment{align-items:start;margin-block:24px}
 .evidence pre{max-height:30rem}.readout strong{font:500 1.35rem Georgia,serif}caption{text-align:left;font-weight:650}

@@ -218,7 +218,7 @@ def _chart(summary,out):
     matplotlib.use("Agg")
     from matplotlib import pyplot as plt
     with plt.rc_context({"svg.hashsalt":"plato-gpu-controls", "font.size":9}):
-        fig,axes=plt.subplots(1,2,figsize=(10.5,4.3),layout="constrained",sharey=True)
+        fig,axes=plt.subplots(1,2,figsize=(10,5.25),layout="constrained",sharey=True)
         handles = {}
         for ax,donor in zip(axes,GPU):
             for key,offset,color in (("original",-.09,"#8f4929"),("amended",.09,"#166450")):
@@ -243,7 +243,9 @@ def _chart(summary,out):
             ax.spines[["top","right","left"]].set_visible(False)
             ax.grid(axis="x",alpha=.16);ax.tick_params(axis="y",length=0)
         fig.legend(handles.values(),handles.keys(),loc="outside upper center",ncols=3,frameon=False)
-        fig.savefig(out/"controls.svg",metadata={"Date":None});plt.close(fig)
+        fig.savefig(out/"controls.svg",metadata={"Date":None})
+        fig.savefig(out/"controls.png",dpi=120)
+        plt.close(fig)
 
 
 def _development(folder):
